@@ -4,7 +4,8 @@ import {
   ShoppingBag, Package, Receipt, Building, Truck, 
   Megaphone, Wrench, MoreHorizontal, Wallet, Coins,
   CheckCircle2, PieChart, Edit2, X, Trash2, Plus,
-  CalendarDays, ChevronUp, Download, Loader2
+  CalendarDays, ChevronUp, Download, Loader2, Search,
+  ArrowRight
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
@@ -12,8 +13,9 @@ import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged }
 import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, setDoc } from 'firebase/firestore';
 
 // =====================================================================
-// KONFIGURASI FIREBASE ARIEF (NANTI GANTI DENGAN KODEMU DI VS CODE)
+// KONFIGURASI FIREBASE ARIEF 
 // =====================================================================
+// Paste config dari Firebase di dalam sini:
 const firebaseConfig = {
   apiKey: "AIzaSyBgP66PLL9Smp7T9AgewsqKtK5jdKGFyA8",
   authDomain: "kas-sadjian.firebaseapp.com",
@@ -62,7 +64,6 @@ const DEFAULT_SUBCATEGORIES = {
 
 const formatRp = (number) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(number);
 
-// Fungsi untuk mendapatkan Format Bulan saat ini (Contoh: "2026_02")
 const getCurrentMonthStr = () => {
   const d = new Date();
   return `${d.getFullYear()}_${String(d.getMonth() + 1).padStart(2, '0')}`;
@@ -71,7 +72,7 @@ const getCurrentMonthStr = () => {
 export default function App() {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState('add'); 
-  const [viewMonth, setViewMonth] = useState(getCurrentMonthStr()); // Partisi Bulan Aktif
+  const [viewMonth, setViewMonth] = useState(getCurrentMonthStr()); 
   const [transactions, setTransactions] = useState([]);
   const [subcategories, setSubcategories] = useState(DEFAULT_SUBCATEGORIES);
   const [editingTx, setEditingTx] = useState(null);
@@ -83,7 +84,12 @@ export default function App() {
     const initAuth = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
+          try {
+            await signInWithCustomToken(auth, __initial_auth_token);
+          } catch (tokenError) {
+            console.warn("Token bawaan tidak cocok dengan config baru, mencoba login anonim...", tokenError);
+            await signInAnonymously(auth);
+          }
         } else {
           await signInAnonymously(auth);
         }
@@ -100,14 +106,12 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // --- 2. FETCH DATA (HANYA MEMUAT BULAN YANG DIPILIH) ---
+  // --- 2. FETCH DATA ---
   useEffect(() => {
     if (!user) return;
     setIsLoading(true);
 
-    // Bikin path Laci spesifik per bulan (Contoh: transactions_2026_02)
     const txRef = collection(db, 'artifacts', appId, 'users', user.uid, `transactions_${viewMonth}`);
-    
     const unsubscribeTx = onSnapshot(txRef, 
       (snapshot) => {
         const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -135,20 +139,18 @@ export default function App() {
       unsubscribeTx();
       unsubscribeSettings();
     };
-  }, [user, viewMonth]); // Akan dijalankan ulang hanya saat user ganti bulan
+  }, [user, viewMonth]); 
 
   // --- 3. DATABASE OPERATIONS ---
   const addTransaction = async (data) => {
     if (!user) return;
     try {
       const currentMonth = getCurrentMonthStr();
-      // Selalu catat di laci bulan ini
       const txRef = collection(db, 'artifacts', appId, 'users', user.uid, `transactions_${currentMonth}`);
       await addDoc(txRef, {
         ...data,
         date: new Date().toISOString()
       });
-      // Arahkan ke history dan pastikan melihat bulan ini
       setViewMonth(currentMonth);
       setActiveTab('history');
     } catch (e) {
@@ -159,7 +161,6 @@ export default function App() {
   const updateTransaction = async (updatedTx) => {
     if (!user) return;
     try {
-      // Update di laci bulan yang sedang dilihat
       const docRef = doc(db, 'artifacts', appId, 'users', user.uid, `transactions_${viewMonth}`, updatedTx.id);
       const { id, ...dataToUpdate } = updatedTx; 
       await updateDoc(docRef, dataToUpdate);
@@ -172,7 +173,6 @@ export default function App() {
   const deleteTransaction = async (id) => {
     if (!user) return;
     try {
-      // Hapus dari laci bulan yang sedang dilihat
       const docRef = doc(db, 'artifacts', appId, 'users', user.uid, `transactions_${viewMonth}`, id);
       await deleteDoc(docRef);
       setEditingTx(null);
@@ -238,7 +238,7 @@ export default function App() {
         <div className="pt-10 pb-4 px-6 bg-gradient-to-r from-orange-500 to-amber-500 text-white rounded-b-3xl shadow-md z-10 shrink-0 flex justify-between items-end">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Kas Mie Ayam</h1>
-            <p className="text-orange-100 text-sm font-medium">Rekap Data: {viewMonth.replace('_', '/')}</p>
+            <p className="text-orange-100 text-sm font-medium">Buku Kas Digital Arief</p>
           </div>
           <button onClick={exportToCSV} className="p-2 bg-white/20 hover:bg-white/30 rounded-xl transition-colors flex flex-col items-center">
             <Download size={20} />
@@ -275,10 +275,24 @@ export default function App() {
 
 // --- TAB: BERANDA / DASHBOARD ---
 function DashboardTab({ transactions }) {
+  // Hitung Saldo Total Standar
   const totalIncome = transactions.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
   const totalExpense = transactions.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
   const balance = totalIncome - totalExpense;
 
+  // FITUR BARU: ANALISIS LABA RUGI (PROFITABILITY)
+  // 1. Pendapatan Murni (Penjualan + Lain-lain, tidak termasuk Modal Awal)
+  const pendapatanMurni = transactions.filter(t => t.type === 'income' && t.categoryId !== 'modal').reduce((a, b) => a + b.amount, 0);
+  // 2. HPP (Bahan Baku + Kemasan)
+  const hpp = transactions.filter(t => t.type === 'expense' && ['bahan_baku', 'kemasan'].includes(t.categoryId)).reduce((a, b) => a + b.amount, 0);
+  // 3. Laba Kotor
+  const labaKotor = pendapatanMurni - hpp;
+  // 4. Biaya Operasional (Pengeluaran selain Bahan Baku & Kemasan)
+  const operasional = transactions.filter(t => t.type === 'expense' && !['bahan_baku', 'kemasan'].includes(t.categoryId)).reduce((a, b) => a + b.amount, 0);
+  // 5. Laba Bersih Operasional
+  const labaBersih = labaKotor - operasional;
+
+  // Pie Chart Data
   const expenseStats = {};
   transactions.filter(t => t.type === 'expense').forEach(t => {
     expenseStats[t.categoryId] = (expenseStats[t.categoryId] || 0) + t.amount;
@@ -313,21 +327,60 @@ function DashboardTab({ transactions }) {
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      
+      {/* Saldo Bulan Ini (Card Utama) */}
       <div className="bg-gray-900 rounded-3xl p-6 text-white shadow-xl relative overflow-hidden">
-        <p className="text-gray-400 text-sm font-medium mb-1">Total Saldo (Bulan Ini)</p>
+        <p className="text-gray-400 text-sm font-medium mb-1">Arus Kas Kotor (Bulan Ini)</p>
         <h2 className="text-3xl font-bold mb-6">{formatRp(balance)}</h2>
         <div className="flex justify-between items-center gap-4">
           <div className="flex-1 bg-white/10 rounded-2xl p-3 backdrop-blur-sm">
-            <div className="flex items-center gap-2 mb-1 text-green-400"><TrendingUp size={16} /><span className="text-xs font-semibold">Pemasukan</span></div>
+            <div className="flex items-center gap-2 mb-1 text-green-400"><TrendingUp size={16} /><span className="text-xs font-semibold">Uang Masuk</span></div>
             <p className="text-sm font-bold">{formatRp(totalIncome)}</p>
           </div>
           <div className="flex-1 bg-white/10 rounded-2xl p-3 backdrop-blur-sm">
-            <div className="flex items-center gap-2 mb-1 text-red-400"><TrendingDown size={16} /><span className="text-xs font-semibold">Pengeluaran</span></div>
+            <div className="flex items-center gap-2 mb-1 text-red-400"><TrendingDown size={16} /><span className="text-xs font-semibold">Uang Keluar</span></div>
             <p className="text-sm font-bold">{formatRp(totalExpense)}</p>
           </div>
         </div>
       </div>
 
+      {/* FITUR BARU: Card Laba Rugi Operasional */}
+      <div className="bg-gradient-to-br from-orange-50 to-amber-50 rounded-3xl p-5 border border-orange-100 shadow-sm">
+        <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
+          <TrendingUp className="text-orange-500" size={20} /> 
+          Analisis Laba Rugi
+        </h3>
+        
+        <div className="space-y-3">
+          <div className="flex justify-between items-center text-sm">
+            <span className="text-gray-600">Pendapatan Jualan</span>
+            <span className="font-bold text-gray-800">{formatRp(pendapatanMurni)}</span>
+          </div>
+          <div className="flex justify-between items-center text-sm">
+            <span className="text-gray-600">HPP (Bahan & Kemasan)</span>
+            <span className="font-bold text-red-500">-{formatRp(hpp)}</span>
+          </div>
+          
+          <div className="border-t border-orange-200/50 pt-2 flex justify-between items-center">
+            <span className="font-bold text-gray-700 text-sm">Laba Kotor</span>
+            <span className="font-black text-gray-800">{formatRp(labaKotor)}</span>
+          </div>
+
+          <div className="flex justify-between items-center text-sm pt-1">
+            <span className="text-gray-600">Biaya Operasional (Gaji, dll)</span>
+            <span className="font-bold text-red-500">-{formatRp(operasional)}</span>
+          </div>
+
+          <div className="border-t border-orange-200/50 pt-3 flex justify-between items-center bg-white p-3 rounded-2xl shadow-sm">
+            <span className="font-bold text-orange-600">Laba Bersih</span>
+            <span className={`font-black text-lg ${labaBersih >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+              {formatRp(labaBersih)}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Pie Chart Pengeluaran Terbesar */}
       <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100">
         <h3 className="font-bold text-gray-800 mb-4">Pengeluaran Terbesar</h3>
         {totalExpense === 0 ? (
@@ -472,9 +525,11 @@ function AddTransactionTab({ onSave, subcategories, onUpdateSubs }) {
   );
 }
 
-// --- TAB: RIWAYAT BULANAN (DENGAN PARTISI DATABASE) ---
+// --- TAB: RIWAYAT BULANAN (DENGAN SEARCH) ---
 function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
-  // Generate 12 Bulan Pilihan
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // 1. Generate 12 Bulan Pilihan
   const monthsList = Array.from({ length: 12 }).map((_, i) => {
     const d = new Date();
     d.setMonth(d.getMonth() - i);
@@ -483,9 +538,19 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
     return { str: monthStr, label: i === 0 ? 'Bulan Ini' : labelStr };
   });
 
-  // Karena transactions sudah terfilter dari Firebase berdasarkan viewMonth, 
-  // kita tinggal mengelompokkannya per Tanggal
-  const groupedTxs = transactions.reduce((groups, tx) => {
+  // 2. Filter Search (Pencarian Cepat)
+  const searchedTxs = transactions.filter(tx => {
+    if (!searchQuery) return true;
+    const query = searchQuery.toLowerCase();
+    return (
+      tx.category?.toLowerCase().includes(query) ||
+      tx.subcategory?.toLowerCase().includes(query) ||
+      tx.note?.toLowerCase().includes(query)
+    );
+  });
+
+  // 3. Grouping Transaksi per Tanggal
+  const groupedTxs = searchedTxs.reduce((groups, tx) => {
     const d = new Date(tx.date);
     const dateStr = d.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' });
     
@@ -499,50 +564,81 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
   }, {});
 
   const sortedDates = Object.values(groupedTxs).sort((a, b) => b.dateObj - a.dateObj);
-  // Sort transaksi di dalam hari yang sama
   sortedDates.forEach(group => group.txs.sort((a, b) => new Date(b.date) - new Date(a.date)));
 
-  const monthIncome = transactions.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
-  const monthExpense = transactions.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
+  // Kalkulasi total bulan terpilih (berdasarkan hasil search jika ada)
+  const monthIncome = searchedTxs.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
+  const monthExpense = searchedTxs.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
 
   return (
     <div className="space-y-4 pb-10 animate-in fade-in slide-in-from-left-4 duration-300">
-      <h2 className="text-2xl font-bold text-gray-800 px-1">Riwayat Transaksi</h2>
       
-      {/* Scrollable Month Selector */}
-      <div className="flex overflow-x-auto gap-2 pb-2 -mx-4 px-4 [&::-webkit-scrollbar]:hidden">
-        {monthsList.map((month) => {
-          const isSelected = month.str === viewMonth;
-          return (
+      {/* Header & Search Bar */}
+      <div className="px-1 mb-2">
+        <h2 className="text-2xl font-bold text-gray-800 mb-3">Riwayat Transaksi</h2>
+        
+        {/* FITUR BARU: Kolom Pencarian Cepat */}
+        <div className="relative">
+          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <Search className="h-5 w-5 text-gray-400" />
+          </div>
+          <input
+            type="text"
+            className="block w-full pl-10 pr-3 py-3 border border-gray-200 rounded-2xl leading-5 bg-white placeholder-gray-400 focus:outline-none focus:bg-white focus:ring-2 focus:ring-orange-500 focus:border-orange-500 sm:text-sm transition-all shadow-sm"
+            placeholder="Cari transaksi (ex: gas, ayam, gaji)..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+          {searchQuery && (
             <button 
-              key={month.str} 
-              onClick={() => setViewMonth(month.str)}
-              className={`whitespace-nowrap px-4 py-2 rounded-full text-sm font-bold transition-all border ${
-                isSelected ? 'bg-gray-800 text-white border-gray-800 shadow-md' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
-              }`}
+              onClick={() => setSearchQuery('')}
+              className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
             >
-              {month.label}
+              <X size={16} />
             </button>
-          );
-        })}
+          )}
+        </div>
       </div>
+      
+      {/* Scrollable Month Selector (Hanya tampil jika tidak sedang mencari) */}
+      {!searchQuery && (
+        <div className="flex overflow-x-auto gap-2 pb-2 -mx-4 px-4 [&::-webkit-scrollbar]:hidden">
+          {monthsList.map((month) => {
+            const isSelected = month.str === viewMonth;
+            return (
+              <button 
+                key={month.str} 
+                onClick={() => setViewMonth(month.str)}
+                className={`whitespace-nowrap px-4 py-2 rounded-full text-sm font-bold transition-all border ${
+                  isSelected ? 'bg-gray-800 text-white border-gray-800 shadow-md' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                {month.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
-      <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex justify-between">
+      {/* Ringkasan Pemasukan & Pengeluaran */}
+      <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex justify-between items-center">
          <div>
-           <p className="text-xs text-gray-500 font-medium mb-1">Pemasukan</p>
+           <p className="text-xs text-gray-500 font-medium mb-1">Total Pemasukan</p>
            <p className="text-sm font-bold text-green-600">{formatRp(monthIncome)}</p>
          </div>
+         <div className="h-8 w-px bg-gray-200 mx-4"></div>
          <div className="text-right">
-           <p className="text-xs text-gray-500 font-medium mb-1">Pengeluaran</p>
+           <p className="text-xs text-gray-500 font-medium mb-1">Total Pengeluaran</p>
            <p className="text-sm font-bold text-red-600">{formatRp(monthExpense)}</p>
          </div>
       </div>
 
       <div className="space-y-6 mt-2">
         {sortedDates.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-40 text-gray-400">
-            <CalendarDays size={40} className="mb-3 opacity-20" />
-            <p className="text-sm">Tidak ada transaksi di bulan ini.</p>
+          <div className="flex flex-col items-center justify-center h-40 text-gray-400 bg-white rounded-3xl border border-dashed border-gray-200">
+            <Search size={40} className="mb-3 opacity-20" />
+            <p className="text-sm font-medium">Transaksi tidak ditemukan.</p>
+            {searchQuery && <p className="text-xs mt-1 text-gray-400">Coba kata kunci lain.</p>}
           </div>
         ) : (
           sortedDates.map((group) => (
@@ -550,8 +646,8 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
               <div className="flex justify-between items-end mb-2 px-1">
                 <h3 className="font-bold text-gray-700 text-sm">{group.dateStr}</h3>
                 <div className="flex gap-2 text-[10px] font-bold">
-                   {group.dailyIncome > 0 && <span className="text-green-500">+{formatRp(group.dailyIncome)}</span>}
-                   {group.dailyExpense > 0 && <span className="text-red-500">-{formatRp(group.dailyExpense)}</span>}
+                   {group.dailyIncome > 0 && <span className="text-green-500 bg-green-50 px-2 py-0.5 rounded-md">+{formatRp(group.dailyIncome)}</span>}
+                   {group.dailyExpense > 0 && <span className="text-red-500 bg-red-50 px-2 py-0.5 rounded-md">-{formatRp(group.dailyExpense)}</span>}
                 </div>
               </div>
 
