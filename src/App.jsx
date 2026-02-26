@@ -5,7 +5,7 @@ import {
   Megaphone, Wrench, MoreHorizontal, Wallet, Coins,
   CheckCircle2, PieChart, Edit2, X, Trash2, Plus,
   CalendarDays, ChevronUp, Download, Loader2, Search,
-  ArrowRight
+  Calendar
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
@@ -15,7 +15,6 @@ import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot
 // =====================================================================
 // KONFIGURASI FIREBASE ARIEF 
 // =====================================================================
-// Paste config dari Firebase di dalam sini:
 const firebaseConfig = {
   apiKey: "AIzaSyBgP66PLL9Smp7T9AgewsqKtK5jdKGFyA8",
   authDomain: "kas-sadjian.firebaseapp.com",
@@ -69,6 +68,17 @@ const getCurrentMonthStr = () => {
   return `${d.getFullYear()}_${String(d.getMonth() + 1).padStart(2, '0')}`;
 };
 
+// Helper Format Input Waktu Lokal (YYYY-MM-DDTHH:mm)
+const getLocalDatetimeLocal = (dateParam = new Date()) => {
+  const d = new Date(dateParam);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hours = String(d.getHours()).padStart(2, '0');
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+};
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState('add'); 
@@ -87,7 +97,7 @@ export default function App() {
           try {
             await signInWithCustomToken(auth, __initial_auth_token);
           } catch (tokenError) {
-            console.warn("Token bawaan tidak cocok dengan config baru, mencoba login anonim...", tokenError);
+            console.warn("Mencoba login anonim...", tokenError);
             await signInAnonymously(auth);
           }
         } else {
@@ -145,13 +155,15 @@ export default function App() {
   const addTransaction = async (data) => {
     if (!user) return;
     try {
-      const currentMonth = getCurrentMonthStr();
-      const txRef = collection(db, 'artifacts', appId, 'users', user.uid, `transactions_${currentMonth}`);
-      await addDoc(txRef, {
-        ...data,
-        date: new Date().toISOString()
-      });
-      setViewMonth(currentMonth);
+      // Hitung laci bulan berdasarkan tanggal transaksi yang dipilih user (mendukung backdate)
+      const d = new Date(data.date);
+      const targetMonth = `${d.getFullYear()}_${String(d.getMonth() + 1).padStart(2, '0')}`;
+      
+      const txRef = collection(db, 'artifacts', appId, 'users', user.uid, `transactions_${targetMonth}`);
+      await addDoc(txRef, data);
+      
+      // Auto ganti view ke bulan transaksi tersebut
+      setViewMonth(targetMonth);
       setActiveTab('history');
     } catch (e) {
       console.error("Gagal menambah transaksi: ", e);
@@ -161,9 +173,21 @@ export default function App() {
   const updateTransaction = async (updatedTx) => {
     if (!user) return;
     try {
-      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, `transactions_${viewMonth}`, updatedTx.id);
-      const { id, ...dataToUpdate } = updatedTx; 
-      await updateDoc(docRef, dataToUpdate);
+      const newDate = new Date(updatedTx.date);
+      const newMonth = `${newDate.getFullYear()}_${String(newDate.getMonth() + 1).padStart(2, '0')}`;
+
+      // Jika user edit tanggal hingga lompat bulan, kita harus pindah laci (Hapus yg lama, Buat yg baru)
+      if (newMonth !== viewMonth) {
+        await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, `transactions_${viewMonth}`, updatedTx.id));
+        const { id, ...dataToUpdate } = updatedTx; 
+        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, `transactions_${newMonth}`), dataToUpdate);
+        setViewMonth(newMonth); // Pindah view ke bulan baru
+      } else {
+        // Update normal di laci yang sama
+        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, `transactions_${viewMonth}`, updatedTx.id);
+        const { id, ...dataToUpdate } = updatedTx; 
+        await updateDoc(docRef, dataToUpdate);
+      }
       setEditingTx(null);
     } catch (e) {
       console.error("Gagal update transaksi: ", e);
@@ -275,24 +299,16 @@ export default function App() {
 
 // --- TAB: BERANDA / DASHBOARD ---
 function DashboardTab({ transactions }) {
-  // Hitung Saldo Total Standar
   const totalIncome = transactions.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
   const totalExpense = transactions.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
   const balance = totalIncome - totalExpense;
 
-  // FITUR BARU: ANALISIS LABA RUGI (PROFITABILITY)
-  // 1. Pendapatan Murni (Penjualan + Lain-lain, tidak termasuk Modal Awal)
   const pendapatanMurni = transactions.filter(t => t.type === 'income' && t.categoryId !== 'modal').reduce((a, b) => a + b.amount, 0);
-  // 2. HPP (Bahan Baku + Kemasan)
   const hpp = transactions.filter(t => t.type === 'expense' && ['bahan_baku', 'kemasan'].includes(t.categoryId)).reduce((a, b) => a + b.amount, 0);
-  // 3. Laba Kotor
   const labaKotor = pendapatanMurni - hpp;
-  // 4. Biaya Operasional (Pengeluaran selain Bahan Baku & Kemasan)
   const operasional = transactions.filter(t => t.type === 'expense' && !['bahan_baku', 'kemasan'].includes(t.categoryId)).reduce((a, b) => a + b.amount, 0);
-  // 5. Laba Bersih Operasional
   const labaBersih = labaKotor - operasional;
 
-  // Pie Chart Data
   const expenseStats = {};
   transactions.filter(t => t.type === 'expense').forEach(t => {
     expenseStats[t.categoryId] = (expenseStats[t.categoryId] || 0) + t.amount;
@@ -327,8 +343,6 @@ function DashboardTab({ transactions }) {
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      
-      {/* Saldo Bulan Ini (Card Utama) */}
       <div className="bg-gray-900 rounded-3xl p-6 text-white shadow-xl relative overflow-hidden">
         <p className="text-gray-400 text-sm font-medium mb-1">Arus Kas Kotor (Bulan Ini)</p>
         <h2 className="text-3xl font-bold mb-6">{formatRp(balance)}</h2>
@@ -344,13 +358,11 @@ function DashboardTab({ transactions }) {
         </div>
       </div>
 
-      {/* FITUR BARU: Card Laba Rugi Operasional */}
       <div className="bg-gradient-to-br from-orange-50 to-amber-50 rounded-3xl p-5 border border-orange-100 shadow-sm">
         <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
           <TrendingUp className="text-orange-500" size={20} /> 
           Analisis Laba Rugi
         </h3>
-        
         <div className="space-y-3">
           <div className="flex justify-between items-center text-sm">
             <span className="text-gray-600">Pendapatan Jualan</span>
@@ -360,27 +372,21 @@ function DashboardTab({ transactions }) {
             <span className="text-gray-600">HPP (Bahan & Kemasan)</span>
             <span className="font-bold text-red-500">-{formatRp(hpp)}</span>
           </div>
-          
           <div className="border-t border-orange-200/50 pt-2 flex justify-between items-center">
             <span className="font-bold text-gray-700 text-sm">Laba Kotor</span>
             <span className="font-black text-gray-800">{formatRp(labaKotor)}</span>
           </div>
-
           <div className="flex justify-between items-center text-sm pt-1">
             <span className="text-gray-600">Biaya Operasional (Gaji, dll)</span>
             <span className="font-bold text-red-500">-{formatRp(operasional)}</span>
           </div>
-
           <div className="border-t border-orange-200/50 pt-3 flex justify-between items-center bg-white p-3 rounded-2xl shadow-sm">
             <span className="font-bold text-orange-600">Laba Bersih</span>
-            <span className={`font-black text-lg ${labaBersih >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-              {formatRp(labaBersih)}
-            </span>
+            <span className={`font-black text-lg ${labaBersih >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatRp(labaBersih)}</span>
           </div>
         </div>
       </div>
 
-      {/* Pie Chart Pengeluaran Terbesar */}
       <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100">
         <h3 className="font-bold text-gray-800 mb-4">Pengeluaran Terbesar</h3>
         {totalExpense === 0 ? (
@@ -426,6 +432,8 @@ function AddTransactionTab({ onSave, subcategories, onUpdateSubs }) {
   const [selectedSub, setSelectedSub] = useState('');
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
+  const [txDate, setTxDate] = useState(getLocalDatetimeLocal()); // State Waktu Transaksi (Bisa diedit)
+  
   const [isEditingSubs, setIsEditingSubs] = useState(false);
   const [newSubName, setNewSubName] = useState('');
 
@@ -433,15 +441,28 @@ function AddTransactionTab({ onSave, subcategories, onUpdateSubs }) {
   const currentSubs = selectedCategory ? (subcategories[selectedCategory.id] || []) : [];
 
   useEffect(() => { setSelectedSub(''); setIsEditingSubs(false); }, [selectedCategory]);
-  useEffect(() => { setSelectedCategory(null); setSelectedSub(''); setIsEditingSubs(false); }, [type]);
+  useEffect(() => { 
+    setSelectedCategory(null); 
+    setSelectedSub(''); 
+    setIsEditingSubs(false); 
+    setTxDate(getLocalDatetimeLocal()); // Reset ke waktu sekarang tiap ganti tipe
+  }, [type]);
 
   const handleAmountChange = (e) => setAmount(e.target.value.replace(/[^0-9]/g, ''));
-  const isFormValid = selectedCategory && amount && Number(amount) > 0 && (currentSubs.length === 0 || selectedSub !== '');
+  const isFormValid = selectedCategory && amount && Number(amount) > 0 && (currentSubs.length === 0 || selectedSub !== '') && txDate;
 
   const handleSubmit = () => {
     if (!isFormValid) return;
-    onSave({ type, category: selectedCategory.label, categoryId: selectedCategory.id, subcategory: selectedSub, amount: Number(amount), note });
-    setAmount(''); setNote('');
+    onSave({ 
+      type, 
+      category: selectedCategory.label, 
+      categoryId: selectedCategory.id, 
+      subcategory: selectedSub, 
+      amount: Number(amount), 
+      note,
+      date: new Date(txDate).toISOString() // Kirim waktu yang dipilih user
+    });
+    setAmount(''); setNote(''); setTxDate(getLocalDatetimeLocal());
   };
 
   const handleAddSub = () => {
@@ -506,30 +527,45 @@ function AddTransactionTab({ onSave, subcategories, onUpdateSubs }) {
       )}
 
       <div className={`transition-all duration-500 ${selectedCategory ? 'opacity-100 translate-y-0' : 'opacity-50 pointer-events-none translate-y-4'}`}>
-        <div className="bg-white p-5 rounded-3xl border shadow-sm mb-6">
-          <div className="mb-4">
+        <div className="bg-white p-5 rounded-3xl border shadow-sm mb-6 space-y-4">
+          
+          {/* Kolom Input Nominal */}
+          <div>
             <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Jumlah (Rp)</label>
             <div className="relative">
               <span className="absolute left-4 top-1/2 -translate-y-1/2 text-xl font-bold text-gray-400">Rp</span>
               <input type="text" inputMode="numeric" value={amount ? Number(amount).toLocaleString('id-ID') : ''} onChange={handleAmountChange} placeholder="0" className={`w-full text-right text-3xl font-bold p-4 pl-12 rounded-2xl bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 ${type === 'expense' ? 'focus:ring-red-400 text-red-600' : 'focus:ring-green-400 text-green-600'}`} />
             </div>
           </div>
+          
+          {/* FITUR BARU: Kolom Waktu (Bisa diedit manual/mundur) */}
+          <div className="pt-2">
+             <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Waktu Transaksi</label>
+             <input 
+               type="datetime-local" 
+               value={txDate}
+               onChange={(e) => setTxDate(e.target.value)}
+               className="w-full p-4 rounded-2xl bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-orange-400 border border-transparent text-sm font-medium text-gray-700" 
+             />
+          </div>
+
           <div>
             <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Catatan</label>
             <input type="text" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Contoh: Pembelian ayam 5kg" className="w-full p-4 rounded-2xl bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-orange-400 border border-transparent text-sm" />
           </div>
         </div>
+
         <button onClick={handleSubmit} disabled={!isFormValid} className={`w-full py-4 rounded-2xl font-bold text-lg flex justify-center items-center gap-2 transition-all ${isFormValid ? `text-white shadow-lg ${type === 'expense' ? 'bg-red-500' : 'bg-green-500'}` : 'bg-gray-200 text-gray-400'}`}><CheckCircle2 size={24} /> Simpan Transaksi</button>
       </div>
     </div>
   );
 }
 
-// --- TAB: RIWAYAT BULANAN (DENGAN SEARCH) ---
+// --- TAB: RIWAYAT BULANAN ---
 function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
   const [searchQuery, setSearchQuery] = useState('');
+  const [filterDate, setFilterDate] = useState(''); // State untuk filter kalender 'YYYY-MM-DD'
 
-  // 1. Generate 12 Bulan Pilihan
   const monthsList = Array.from({ length: 12 }).map((_, i) => {
     const d = new Date();
     d.setMonth(d.getMonth() - i);
@@ -538,18 +574,44 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
     return { str: monthStr, label: i === 0 ? 'Bulan Ini' : labelStr };
   });
 
-  // 2. Filter Search (Pencarian Cepat)
+  // Handle pergantian tanggal dari kalender
+  const handleFilterDateChange = (e) => {
+    const val = e.target.value; // Format: 'YYYY-MM-DD'
+    setFilterDate(val);
+    
+    // Kalau user pilih tanggal, otomatis ganti "laci" viewMonth ke bulan tersebut
+    if (val) {
+      const [year, month] = val.split('-');
+      setViewMonth(`${year}_${month}`);
+    }
+  };
+
+  // Filter gabungan: Pencarian Teks & Filter Tanggal Spesifik
   const searchedTxs = transactions.filter(tx => {
-    if (!searchQuery) return true;
-    const query = searchQuery.toLowerCase();
-    return (
-      tx.category?.toLowerCase().includes(query) ||
-      tx.subcategory?.toLowerCase().includes(query) ||
-      tx.note?.toLowerCase().includes(query)
-    );
+    let matchSearch = true;
+    let matchDate = true;
+
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      matchSearch = tx.category?.toLowerCase().includes(query) ||
+                    tx.subcategory?.toLowerCase().includes(query) ||
+                    tx.note?.toLowerCase().includes(query);
+    }
+
+    if (filterDate) {
+      // Ambil YYYY-MM-DD sesuai zona waktu lokal HP pengguna
+      const d = new Date(tx.date);
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      const txDateStr = `${yyyy}-${mm}-${dd}`;
+      
+      matchDate = (txDateStr === filterDate);
+    }
+
+    return matchSearch && matchDate;
   });
 
-  // 3. Grouping Transaksi per Tanggal
   const groupedTxs = searchedTxs.reduce((groups, tx) => {
     const d = new Date(tx.date);
     const dateStr = d.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' });
@@ -566,42 +628,58 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
   const sortedDates = Object.values(groupedTxs).sort((a, b) => b.dateObj - a.dateObj);
   sortedDates.forEach(group => group.txs.sort((a, b) => new Date(b.date) - new Date(a.date)));
 
-  // Kalkulasi total bulan terpilih (berdasarkan hasil search jika ada)
   const monthIncome = searchedTxs.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
   const monthExpense = searchedTxs.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
 
   return (
     <div className="space-y-4 pb-10 animate-in fade-in slide-in-from-left-4 duration-300">
       
-      {/* Header & Search Bar */}
       <div className="px-1 mb-2">
         <h2 className="text-2xl font-bold text-gray-800 mb-3">Riwayat Transaksi</h2>
         
-        {/* FITUR BARU: Kolom Pencarian Cepat */}
-        <div className="relative">
-          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-            <Search className="h-5 w-5 text-gray-400" />
+        {/* Kolom Pencarian & Kalender Filter sejajar */}
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+              <Search className="h-5 w-5 text-gray-400" />
+            </div>
+            <input
+              type="text"
+              className="block w-full pl-10 pr-3 py-3 border border-gray-200 rounded-2xl leading-5 bg-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-orange-500 sm:text-sm transition-all shadow-sm"
+              placeholder="Cari transaksi..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            {searchQuery && (
+              <button onClick={() => setSearchQuery('')} className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"><X size={16} /></button>
+            )}
           </div>
-          <input
-            type="text"
-            className="block w-full pl-10 pr-3 py-3 border border-gray-200 rounded-2xl leading-5 bg-white placeholder-gray-400 focus:outline-none focus:bg-white focus:ring-2 focus:ring-orange-500 focus:border-orange-500 sm:text-sm transition-all shadow-sm"
-            placeholder="Cari transaksi (ex: gas, ayam, gaji)..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-          {searchQuery && (
-            <button 
-              onClick={() => setSearchQuery('')}
-              className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
-            >
-              <X size={16} />
-            </button>
-          )}
+          
+          {/* FITUR BARU: Tombol Kalender / Filter Tanggal */}
+          <div className="relative">
+            <input 
+              type="date" 
+              value={filterDate}
+              onChange={handleFilterDateChange}
+              className={`block w-12 opacity-0 absolute inset-0 z-10 cursor-pointer ${filterDate ? 'w-full' : ''}`}
+              title="Pilih tanggal spesifik"
+            />
+            <div className={`h-full flex items-center justify-center px-4 rounded-2xl border transition-all shadow-sm ${filterDate ? 'bg-orange-50 border-orange-500 text-orange-600' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
+              {filterDate ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold">{filterDate.split('-')[2]}/{filterDate.split('-')[1]}</span>
+                  <button onClick={(e) => { e.preventDefault(); setFilterDate(''); }} className="z-20 p-1 hover:bg-orange-100 rounded-full"><X size={14}/></button>
+                </div>
+              ) : (
+                <Calendar size={20} />
+              )}
+            </div>
+          </div>
         </div>
       </div>
       
-      {/* Scrollable Month Selector (Hanya tampil jika tidak sedang mencari) */}
-      {!searchQuery && (
+      {/* Scrollable Month Selector - Disembunyikan kalau lagi cari pakai kalender biar ga bingung */}
+      {!searchQuery && !filterDate && (
         <div className="flex overflow-x-auto gap-2 pb-2 -mx-4 px-4 [&::-webkit-scrollbar]:hidden">
           {monthsList.map((month) => {
             const isSelected = month.str === viewMonth;
@@ -620,7 +698,6 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
         </div>
       )}
 
-      {/* Ringkasan Pemasukan & Pengeluaran */}
       <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex justify-between items-center">
          <div>
            <p className="text-xs text-gray-500 font-medium mb-1">Total Pemasukan</p>
@@ -636,9 +713,8 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
       <div className="space-y-6 mt-2">
         {sortedDates.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-40 text-gray-400 bg-white rounded-3xl border border-dashed border-gray-200">
-            <Search size={40} className="mb-3 opacity-20" />
+            <CalendarDays size={40} className="mb-3 opacity-20" />
             <p className="text-sm font-medium">Transaksi tidak ditemukan.</p>
-            {searchQuery && <p className="text-xs mt-1 text-gray-400">Coba kata kunci lain.</p>}
           </div>
         ) : (
           sortedDates.map((group) => (
@@ -693,13 +769,14 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
 function EditTransactionModal({ tx, onClose, onSave, onDelete }) {
   const [amount, setAmount] = useState(tx.amount.toString());
   const [note, setNote] = useState(tx.note || '');
+  const [txDate, setTxDate] = useState(getLocalDatetimeLocal(tx.date)); // Tambah state tanggal
 
   const handleAmountChange = (e) => setAmount(e.target.value.replace(/[^0-9]/g, ''));
-  const isFormValid = amount && Number(amount) > 0;
+  const isFormValid = amount && Number(amount) > 0 && txDate;
 
   const handleSave = () => {
     if (!isFormValid) return;
-    onSave({ ...tx, amount: Number(amount), note });
+    onSave({ ...tx, amount: Number(amount), note, date: new Date(txDate).toISOString() });
   };
 
   return (
@@ -724,6 +801,18 @@ function EditTransactionModal({ tx, onClose, onSave, onDelete }) {
               <input type="text" inputMode="numeric" value={amount ? Number(amount).toLocaleString('id-ID') : ''} onChange={handleAmountChange} className={`w-full text-right text-3xl font-bold p-3 pl-12 rounded-2xl bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 ${tx.type === 'expense' ? 'focus:ring-red-400 text-red-600' : 'focus:ring-green-400 text-green-600'}`} />
             </div>
           </div>
+
+          {/* Kolom edit tanggal */}
+          <div>
+             <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Waktu Transaksi</label>
+             <input 
+               type="datetime-local" 
+               value={txDate}
+               onChange={(e) => setTxDate(e.target.value)}
+               className="w-full p-3 rounded-2xl bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 border border-transparent text-sm font-medium" 
+             />
+          </div>
+
           <div>
             <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Catatan Tambahan</label>
             <input type="text" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Catatan..." className="w-full p-3 rounded-2xl bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 border border-transparent text-sm" />
