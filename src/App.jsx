@@ -5,7 +5,7 @@ import {
   Megaphone, Wrench, MoreHorizontal, Wallet, Coins,
   CheckCircle2, PieChart, Edit2, X, Trash2, Plus,
   CalendarDays, ChevronUp, Download, Loader2, Search,
-  Calendar
+  Calendar, BarChart3
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
@@ -68,7 +68,18 @@ const getCurrentMonthStr = () => {
   return `${d.getFullYear()}_${String(d.getMonth() + 1).padStart(2, '0')}`;
 };
 
-// Helper Format Input Waktu Lokal (YYYY-MM-DDTHH:mm)
+// Mendapatkan laci bulan sebelumnya untuk perbandingan (Indikator Pertumbuhan)
+const getPrevMonthStr = (currentMonthStr) => {
+  const [year, month] = currentMonthStr.split('_').map(Number);
+  let prevYear = year;
+  let prevMonth = month - 1;
+  if (prevMonth === 0) {
+    prevMonth = 12;
+    prevYear -= 1;
+  }
+  return `${prevYear}_${String(prevMonth).padStart(2, '0')}`;
+};
+
 const getLocalDatetimeLocal = (dateParam = new Date()) => {
   const d = new Date(dateParam);
   const year = d.getFullYear();
@@ -84,6 +95,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('add'); 
   const [viewMonth, setViewMonth] = useState(getCurrentMonthStr()); 
   const [transactions, setTransactions] = useState([]);
+  const [prevTransactions, setPrevTransactions] = useState([]); // State u/ Data Bulan Lalu
   const [subcategories, setSubcategories] = useState(DEFAULT_SUBCATEGORIES);
   const [editingTx, setEditingTx] = useState(null);
   const [showTopBtn, setShowTopBtn] = useState(false);
@@ -116,11 +128,12 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // --- 2. FETCH DATA ---
+  // --- 2. FETCH DATA (CURRENT & PREVIOUS MONTH) ---
   useEffect(() => {
     if (!user) return;
     setIsLoading(true);
 
+    // Fetch Bulan Ini
     const txRef = collection(db, 'artifacts', appId, 'users', user.uid, `transactions_${viewMonth}`);
     const unsubscribeTx = onSnapshot(txRef, 
       (snapshot) => {
@@ -135,6 +148,17 @@ export default function App() {
       }
     );
 
+    // Fetch Bulan Sebelumnya (Untuk Kalkulasi Pertumbuhan)
+    const prevMonthStr = getPrevMonthStr(viewMonth);
+    const prevTxRef = collection(db, 'artifacts', appId, 'users', user.uid, `transactions_${prevMonthStr}`);
+    const unsubscribePrevTx = onSnapshot(prevTxRef, 
+      (snapshot) => {
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setPrevTransactions(data);
+      },
+      (error) => console.error("Gagal mengambil transaksi bulan lalu:", error)
+    );
+
     const settingsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'preferences');
     const unsubscribeSettings = onSnapshot(settingsRef, 
       (docSnap) => {
@@ -147,6 +171,7 @@ export default function App() {
 
     return () => {
       unsubscribeTx();
+      unsubscribePrevTx();
       unsubscribeSettings();
     };
   }, [user, viewMonth]); 
@@ -155,14 +180,12 @@ export default function App() {
   const addTransaction = async (data) => {
     if (!user) return;
     try {
-      // Hitung laci bulan berdasarkan tanggal transaksi yang dipilih user (mendukung backdate)
       const d = new Date(data.date);
       const targetMonth = `${d.getFullYear()}_${String(d.getMonth() + 1).padStart(2, '0')}`;
       
       const txRef = collection(db, 'artifacts', appId, 'users', user.uid, `transactions_${targetMonth}`);
       await addDoc(txRef, data);
       
-      // Auto ganti view ke bulan transaksi tersebut
       setViewMonth(targetMonth);
       setActiveTab('history');
     } catch (e) {
@@ -176,14 +199,12 @@ export default function App() {
       const newDate = new Date(updatedTx.date);
       const newMonth = `${newDate.getFullYear()}_${String(newDate.getMonth() + 1).padStart(2, '0')}`;
 
-      // Jika user edit tanggal hingga lompat bulan, kita harus pindah laci (Hapus yg lama, Buat yg baru)
       if (newMonth !== viewMonth) {
         await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, `transactions_${viewMonth}`, updatedTx.id));
         const { id, ...dataToUpdate } = updatedTx; 
         await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, `transactions_${newMonth}`), dataToUpdate);
-        setViewMonth(newMonth); // Pindah view ke bulan baru
+        setViewMonth(newMonth); 
       } else {
-        // Update normal di laci yang sama
         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, `transactions_${viewMonth}`, updatedTx.id);
         const { id, ...dataToUpdate } = updatedTx; 
         await updateDoc(docRef, dataToUpdate);
@@ -272,7 +293,7 @@ export default function App() {
 
         {/* Content */}
         <div id="main-scroll-area" onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 pt-6 pb-28 scroll-smooth">
-          {activeTab === 'dashboard' && <DashboardTab transactions={transactions} />}
+          {activeTab === 'dashboard' && <DashboardTab transactions={transactions} prevTransactions={prevTransactions} viewMonth={viewMonth} />}
           {activeTab === 'add' && <AddTransactionTab onSave={addTransaction} subcategories={subcategories} onUpdateSubs={updateSubcategories} />}
           {activeTab === 'history' && <HistoryTab transactions={transactions} onEditClick={setEditingTx} viewMonth={viewMonth} setViewMonth={setViewMonth} />}
         </div>
@@ -298,17 +319,63 @@ export default function App() {
 }
 
 // --- TAB: BERANDA / DASHBOARD ---
-function DashboardTab({ transactions }) {
+function DashboardTab({ transactions, prevTransactions, viewMonth }) {
+  // --- KALKULASI TOTAL ---
   const totalIncome = transactions.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
   const totalExpense = transactions.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
   const balance = totalIncome - totalExpense;
 
+  const prevIncome = prevTransactions.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
+  const prevExpense = prevTransactions.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
+
+  // --- FUNGSI HELPER INDIKATOR PERTUMBUHAN ---
+  const renderGrowthBadge = (curr, prev, type = 'income') => {
+    if (prev === 0 && curr === 0) return null;
+    if (prev === 0) {
+      const color = type === 'income' ? 'text-green-400 bg-green-400/20' : 'text-red-400 bg-red-400/20';
+      return <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-bold mt-1 inline-block ${color}`}>+100%</span>;
+    }
+    const diff = ((curr - prev) / prev) * 100;
+    if (diff === 0) return null;
+    const isUp = diff > 0;
+    
+    // Logika warna: Pemasukan naik = Hijau. Pengeluaran naik = Merah.
+    let colorClass = 'text-gray-400 bg-gray-400/20';
+    if (type === 'income') {
+      colorClass = isUp ? 'text-green-400 bg-green-400/20' : 'text-red-400 bg-red-400/20';
+    } else {
+      colorClass = isUp ? 'text-red-400 bg-red-400/20' : 'text-green-400 bg-green-400/20';
+    }
+    
+    return (
+      <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-bold flex items-center w-fit mt-1 gap-0.5 ${colorClass}`}>
+        {isUp ? <TrendingUp size={10}/> : <TrendingDown size={10}/>}
+        {Math.abs(diff).toFixed(0)}%
+      </span>
+    );
+  };
+
+  // --- ANALISIS LABA RUGI ---
   const pendapatanMurni = transactions.filter(t => t.type === 'income' && t.categoryId !== 'modal').reduce((a, b) => a + b.amount, 0);
   const hpp = transactions.filter(t => t.type === 'expense' && ['bahan_baku', 'kemasan'].includes(t.categoryId)).reduce((a, b) => a + b.amount, 0);
   const labaKotor = pendapatanMurni - hpp;
   const operasional = transactions.filter(t => t.type === 'expense' && !['bahan_baku', 'kemasan'].includes(t.categoryId)).reduce((a, b) => a + b.amount, 0);
   const labaBersih = labaKotor - operasional;
 
+  // --- PERSIAPAN GRAFIK HARIAN (BAR CHART) ---
+  const [yearStr, monthStr] = viewMonth.split('_');
+  const daysInMonth = new Date(parseInt(yearStr), parseInt(monthStr), 0).getDate();
+  
+  const dailyData = Array.from({length: daysInMonth}, (_, i) => {
+    const day = i + 1;
+    const income = transactions.filter(t => t.type === 'income' && new Date(t.date).getDate() === day).reduce((a, b) => a + b.amount, 0);
+    const expense = transactions.filter(t => t.type === 'expense' && new Date(t.date).getDate() === day).reduce((a, b) => a + b.amount, 0);
+    return { day, income, expense };
+  });
+
+  const maxDailyVal = Math.max(...dailyData.map(d => Math.max(d.income, d.expense))) || 1;
+
+  // --- PIE CHART PENGELUARAN ---
   const expenseStats = {};
   transactions.filter(t => t.type === 'expense').forEach(t => {
     expenseStats[t.categoryId] = (expenseStats[t.categoryId] || 0) + t.amount;
@@ -345,15 +412,20 @@ function DashboardTab({ transactions }) {
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="bg-gray-900 rounded-3xl p-6 text-white shadow-xl relative overflow-hidden">
         <p className="text-gray-400 text-sm font-medium mb-1">Arus Kas Kotor (Bulan Ini)</p>
-        <h2 className="text-3xl font-bold mb-6">{formatRp(balance)}</h2>
-        <div className="flex justify-between items-center gap-4">
+        <h2 className="text-3xl font-bold mb-4">{formatRp(balance)}</h2>
+        
+        <div className="flex justify-between items-start gap-4">
           <div className="flex-1 bg-white/10 rounded-2xl p-3 backdrop-blur-sm">
             <div className="flex items-center gap-2 mb-1 text-green-400"><TrendingUp size={16} /><span className="text-xs font-semibold">Uang Masuk</span></div>
             <p className="text-sm font-bold">{formatRp(totalIncome)}</p>
+            {/* INDIKATOR PERTUMBUHAN */}
+            {renderGrowthBadge(totalIncome, prevIncome, 'income')}
           </div>
           <div className="flex-1 bg-white/10 rounded-2xl p-3 backdrop-blur-sm">
             <div className="flex items-center gap-2 mb-1 text-red-400"><TrendingDown size={16} /><span className="text-xs font-semibold">Uang Keluar</span></div>
             <p className="text-sm font-bold">{formatRp(totalExpense)}</p>
+            {/* INDIKATOR PERTUMBUHAN */}
+            {renderGrowthBadge(totalExpense, prevExpense, 'expense')}
           </div>
         </div>
       </div>
@@ -385,6 +457,45 @@ function DashboardTab({ transactions }) {
             <span className={`font-black text-lg ${labaBersih >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatRp(labaBersih)}</span>
           </div>
         </div>
+      </div>
+
+      {/* FITUR BARU: GRAFIK TREN HARIAN (BAR CHART) */}
+      <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100">
+        <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
+          <BarChart3 className="text-blue-500" size={20} />
+          Tren Arus Kas Harian
+        </h3>
+        
+        {totalIncome === 0 && totalExpense === 0 ? (
+          <p className="text-sm text-center text-gray-400 py-6">Belum ada transaksi di bulan ini.</p>
+        ) : (
+          <div className="flex overflow-x-auto gap-1 pb-2 h-36 items-end [&::-webkit-scrollbar]:hidden scroll-smooth">
+             {dailyData.map(d => {
+               // Hitung tinggi batang relatif terhadap nilai maksimum
+               const incomeHeight = Math.max((d.income / maxDailyVal) * 100, 0);
+               const expenseHeight = Math.max((d.expense / maxDailyVal) * 100, 0);
+               
+               // Jangan tampilkan hari yang sama sekali kosong biar grafik lebih padat
+               if (d.income === 0 && d.expense === 0) return null;
+
+               return (
+                 <div key={d.day} className="flex flex-col items-center justify-end gap-1 flex-shrink-0 w-7">
+                   <div className="flex items-end gap-0.5 w-full h-28 justify-center group relative">
+                      {/* Tooltip Hover (Pemasukan) */}
+                      {d.income > 0 && (
+                        <div className="bg-green-400 rounded-t-sm w-2.5 transition-all hover:bg-green-500 cursor-pointer" style={{ height: `${incomeHeight}%` }} title={`Tanggal ${d.day}: +${formatRp(d.income)}`}></div>
+                      )}
+                      {/* Tooltip Hover (Pengeluaran) */}
+                      {d.expense > 0 && (
+                        <div className="bg-red-400 rounded-t-sm w-2.5 transition-all hover:bg-red-500 cursor-pointer" style={{ height: `${expenseHeight}%` }} title={`Tanggal ${d.day}: -${formatRp(d.expense)}`}></div>
+                      )}
+                   </div>
+                   <span className="text-[9px] text-gray-400 font-medium">{d.day}</span>
+                 </div>
+               );
+             })}
+          </div>
+        )}
       </div>
 
       <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100">
@@ -432,7 +543,7 @@ function AddTransactionTab({ onSave, subcategories, onUpdateSubs }) {
   const [selectedSub, setSelectedSub] = useState('');
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
-  const [txDate, setTxDate] = useState(getLocalDatetimeLocal()); // State Waktu Transaksi (Bisa diedit)
+  const [txDate, setTxDate] = useState(getLocalDatetimeLocal()); 
   
   const [isEditingSubs, setIsEditingSubs] = useState(false);
   const [newSubName, setNewSubName] = useState('');
@@ -445,7 +556,7 @@ function AddTransactionTab({ onSave, subcategories, onUpdateSubs }) {
     setSelectedCategory(null); 
     setSelectedSub(''); 
     setIsEditingSubs(false); 
-    setTxDate(getLocalDatetimeLocal()); // Reset ke waktu sekarang tiap ganti tipe
+    setTxDate(getLocalDatetimeLocal()); 
   }, [type]);
 
   const handleAmountChange = (e) => setAmount(e.target.value.replace(/[^0-9]/g, ''));
@@ -460,7 +571,7 @@ function AddTransactionTab({ onSave, subcategories, onUpdateSubs }) {
       subcategory: selectedSub, 
       amount: Number(amount), 
       note,
-      date: new Date(txDate).toISOString() // Kirim waktu yang dipilih user
+      date: new Date(txDate).toISOString() 
     });
     setAmount(''); setNote(''); setTxDate(getLocalDatetimeLocal());
   };
@@ -529,7 +640,6 @@ function AddTransactionTab({ onSave, subcategories, onUpdateSubs }) {
       <div className={`transition-all duration-500 ${selectedCategory ? 'opacity-100 translate-y-0' : 'opacity-50 pointer-events-none translate-y-4'}`}>
         <div className="bg-white p-5 rounded-3xl border shadow-sm mb-6 space-y-4">
           
-          {/* Kolom Input Nominal */}
           <div>
             <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Jumlah (Rp)</label>
             <div className="relative">
@@ -538,7 +648,6 @@ function AddTransactionTab({ onSave, subcategories, onUpdateSubs }) {
             </div>
           </div>
           
-          {/* FITUR BARU: Kolom Waktu (Bisa diedit manual/mundur) */}
           <div className="pt-2">
              <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Waktu Transaksi</label>
              <input 
@@ -564,7 +673,7 @@ function AddTransactionTab({ onSave, subcategories, onUpdateSubs }) {
 // --- TAB: RIWAYAT BULANAN ---
 function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterDate, setFilterDate] = useState(''); // State untuk filter kalender 'YYYY-MM-DD'
+  const [filterDate, setFilterDate] = useState(''); 
 
   const monthsList = Array.from({ length: 12 }).map((_, i) => {
     const d = new Date();
@@ -574,19 +683,16 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
     return { str: monthStr, label: i === 0 ? 'Bulan Ini' : labelStr };
   });
 
-  // Handle pergantian tanggal dari kalender
   const handleFilterDateChange = (e) => {
-    const val = e.target.value; // Format: 'YYYY-MM-DD'
+    const val = e.target.value; 
     setFilterDate(val);
     
-    // Kalau user pilih tanggal, otomatis ganti "laci" viewMonth ke bulan tersebut
     if (val) {
       const [year, month] = val.split('-');
       setViewMonth(`${year}_${month}`);
     }
   };
 
-  // Filter gabungan: Pencarian Teks & Filter Tanggal Spesifik
   const searchedTxs = transactions.filter(tx => {
     let matchSearch = true;
     let matchDate = true;
@@ -599,7 +705,6 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
     }
 
     if (filterDate) {
-      // Ambil YYYY-MM-DD sesuai zona waktu lokal HP pengguna
       const d = new Date(tx.date);
       const yyyy = d.getFullYear();
       const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -637,7 +742,6 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
       <div className="px-1 mb-2">
         <h2 className="text-2xl font-bold text-gray-800 mb-3">Riwayat Transaksi</h2>
         
-        {/* Kolom Pencarian & Kalender Filter sejajar */}
         <div className="flex gap-2">
           <div className="relative flex-1">
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -655,7 +759,6 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
             )}
           </div>
           
-          {/* FITUR BARU: Tombol Kalender / Filter Tanggal */}
           <div className="relative">
             <input 
               type="date" 
@@ -678,7 +781,6 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
         </div>
       </div>
       
-      {/* Scrollable Month Selector - Disembunyikan kalau lagi cari pakai kalender biar ga bingung */}
       {!searchQuery && !filterDate && (
         <div className="flex overflow-x-auto gap-2 pb-2 -mx-4 px-4 [&::-webkit-scrollbar]:hidden">
           {monthsList.map((month) => {
@@ -769,7 +871,7 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
 function EditTransactionModal({ tx, onClose, onSave, onDelete }) {
   const [amount, setAmount] = useState(tx.amount.toString());
   const [note, setNote] = useState(tx.note || '');
-  const [txDate, setTxDate] = useState(getLocalDatetimeLocal(tx.date)); // Tambah state tanggal
+  const [txDate, setTxDate] = useState(getLocalDatetimeLocal(tx.date)); 
 
   const handleAmountChange = (e) => setAmount(e.target.value.replace(/[^0-9]/g, ''));
   const isFormValid = amount && Number(amount) > 0 && txDate;
@@ -802,7 +904,6 @@ function EditTransactionModal({ tx, onClose, onSave, onDelete }) {
             </div>
           </div>
 
-          {/* Kolom edit tanggal */}
           <div>
              <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Waktu Transaksi</label>
              <input 
