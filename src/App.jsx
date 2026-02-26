@@ -5,7 +5,7 @@ import {
   Megaphone, Wrench, MoreHorizontal, Wallet, Coins,
   CheckCircle2, PieChart, Edit2, X, Trash2, Plus,
   CalendarDays, ChevronUp, Download, Loader2, Search,
-  Calendar, BarChart3
+  Calendar, BarChart3, AlertCircle, CheckSquare
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
@@ -68,7 +68,6 @@ const getCurrentMonthStr = () => {
   return `${d.getFullYear()}_${String(d.getMonth() + 1).padStart(2, '0')}`;
 };
 
-// Mendapatkan laci bulan sebelumnya untuk perbandingan (Indikator Pertumbuhan)
 const getPrevMonthStr = (currentMonthStr) => {
   const [year, month] = currentMonthStr.split('_').map(Number);
   let prevYear = year;
@@ -95,7 +94,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('add'); 
   const [viewMonth, setViewMonth] = useState(getCurrentMonthStr()); 
   const [transactions, setTransactions] = useState([]);
-  const [prevTransactions, setPrevTransactions] = useState([]); // State u/ Data Bulan Lalu
+  const [prevTransactions, setPrevTransactions] = useState([]); 
   const [subcategories, setSubcategories] = useState(DEFAULT_SUBCATEGORIES);
   const [editingTx, setEditingTx] = useState(null);
   const [showTopBtn, setShowTopBtn] = useState(false);
@@ -133,7 +132,6 @@ export default function App() {
     if (!user) return;
     setIsLoading(true);
 
-    // Fetch Bulan Ini
     const txRef = collection(db, 'artifacts', appId, 'users', user.uid, `transactions_${viewMonth}`);
     const unsubscribeTx = onSnapshot(txRef, 
       (snapshot) => {
@@ -148,7 +146,6 @@ export default function App() {
       }
     );
 
-    // Fetch Bulan Sebelumnya (Untuk Kalkulasi Pertumbuhan)
     const prevMonthStr = getPrevMonthStr(viewMonth);
     const prevTxRef = collection(db, 'artifacts', appId, 'users', user.uid, `transactions_${prevMonthStr}`);
     const unsubscribePrevTx = onSnapshot(prevTxRef, 
@@ -226,6 +223,17 @@ export default function App() {
     }
   };
 
+  const payTransaction = async (tx) => {
+    if (!user) return;
+    try {
+      // Mengubah status menjadi lunas
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, `transactions_${viewMonth}`, tx.id);
+      await updateDoc(docRef, { status: 'lunas', paymentDate: new Date().toISOString() });
+    } catch (e) {
+      console.error("Gagal melunasi transaksi: ", e);
+    }
+  };
+
   const updateSubcategories = async (categoryId, newSubs) => {
     if (!user) return;
     const updatedSubcategories = { ...subcategories, [categoryId]: newSubs };
@@ -239,14 +247,15 @@ export default function App() {
   // --- FITUR EKSPOR ---
   const exportToCSV = () => {
     if (transactions.length === 0) return;
-    const headers = ['Tanggal', 'Waktu', 'Tipe', 'Kategori Utama', 'Sub Kategori', 'Nominal (Rp)', 'Catatan'];
+    const headers = ['Tanggal', 'Waktu', 'Tipe', 'Kategori Utama', 'Sub Kategori', 'Nominal (Rp)', 'Status', 'Catatan'];
     const rows = transactions.map(tx => {
       const d = new Date(tx.date);
       const dateStr = d.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' });
       const timeStr = d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
       const typeStr = tx.type === 'expense' ? 'Pengeluaran' : 'Pemasukan';
+      const statusStr = tx.status === 'pending' ? 'Belum Lunas' : 'Lunas';
       const safeNote = tx.note ? `"${tx.note.replace(/"/g, '""')}"` : '""';
-      return [dateStr, timeStr, typeStr, tx.category, tx.subcategory || '-', tx.amount, safeNote].join(',');
+      return [dateStr, timeStr, typeStr, tx.category, tx.subcategory || '-', tx.amount, statusStr, safeNote].join(',');
     });
     const csvContent = "data:text/csv;charset=utf-8," + [headers.join(','), ...rows].join('\n');
     const encodedUri = encodeURI(csvContent);
@@ -283,7 +292,7 @@ export default function App() {
         <div className="pt-10 pb-4 px-6 bg-gradient-to-r from-orange-500 to-amber-500 text-white rounded-b-3xl shadow-md z-10 shrink-0 flex justify-between items-end">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Kas Mie Ayam</h1>
-            <p className="text-orange-100 text-sm font-medium">Buku Kas Digital Arief</p>
+            <p className="text-orange-100 text-sm font-medium">Buku Kas SADJIAN</p>
           </div>
           <button onClick={exportToCSV} className="p-2 bg-white/20 hover:bg-white/30 rounded-xl transition-colors flex flex-col items-center">
             <Download size={20} />
@@ -295,7 +304,7 @@ export default function App() {
         <div id="main-scroll-area" onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 pt-6 pb-28 scroll-smooth">
           {activeTab === 'dashboard' && <DashboardTab transactions={transactions} prevTransactions={prevTransactions} viewMonth={viewMonth} />}
           {activeTab === 'add' && <AddTransactionTab onSave={addTransaction} subcategories={subcategories} onUpdateSubs={updateSubcategories} />}
-          {activeTab === 'history' && <HistoryTab transactions={transactions} onEditClick={setEditingTx} viewMonth={viewMonth} setViewMonth={setViewMonth} />}
+          {activeTab === 'history' && <HistoryTab transactions={transactions} onEditClick={setEditingTx} onPayClick={payTransaction} viewMonth={viewMonth} setViewMonth={setViewMonth} />}
         </div>
 
         {/* Tombol Back to Top */}
@@ -320,13 +329,23 @@ export default function App() {
 
 // --- TAB: BERANDA / DASHBOARD ---
 function DashboardTab({ transactions, prevTransactions, viewMonth }) {
-  // --- KALKULASI TOTAL ---
-  const totalIncome = transactions.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
-  const totalExpense = transactions.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
+  // --- KALKULASI TOTAL (HANYA YANG SUDAH LUNAS) ---
+  const validTxs = transactions.filter(t => t.status !== 'pending');
+  const validPrevTxs = prevTransactions.filter(t => t.status !== 'pending');
+
+  const totalIncome = validTxs.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
+  const totalExpense = validTxs.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
   const balance = totalIncome - totalExpense;
 
-  const prevIncome = prevTransactions.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
-  const prevExpense = prevTransactions.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
+  const prevIncome = validPrevTxs.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
+  const prevExpense = validPrevTxs.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
+
+  // --- KALKULASI HUTANG / PIUTANG (YANG PENDING) ---
+  const hutangTxs = transactions.filter(t => t.type === 'expense' && t.status === 'pending');
+  const totalHutang = hutangTxs.reduce((a, b) => a + b.amount, 0);
+  
+  const piutangTxs = transactions.filter(t => t.type === 'income' && t.status === 'pending');
+  const totalPiutang = piutangTxs.reduce((a, b) => a + b.amount, 0);
 
   // --- FUNGSI HELPER INDIKATOR PERTUMBUHAN ---
   const renderGrowthBadge = (curr, prev, type = 'income') => {
@@ -339,7 +358,6 @@ function DashboardTab({ transactions, prevTransactions, viewMonth }) {
     if (diff === 0) return null;
     const isUp = diff > 0;
     
-    // Logika warna: Pemasukan naik = Hijau. Pengeluaran naik = Merah.
     let colorClass = 'text-gray-400 bg-gray-400/20';
     if (type === 'income') {
       colorClass = isUp ? 'text-green-400 bg-green-400/20' : 'text-red-400 bg-red-400/20';
@@ -355,11 +373,11 @@ function DashboardTab({ transactions, prevTransactions, viewMonth }) {
     );
   };
 
-  // --- ANALISIS LABA RUGI ---
-  const pendapatanMurni = transactions.filter(t => t.type === 'income' && t.categoryId !== 'modal').reduce((a, b) => a + b.amount, 0);
-  const hpp = transactions.filter(t => t.type === 'expense' && ['bahan_baku', 'kemasan'].includes(t.categoryId)).reduce((a, b) => a + b.amount, 0);
+  // --- ANALISIS LABA RUGI (DARI YANG LUNAS SAJA) ---
+  const pendapatanMurni = validTxs.filter(t => t.type === 'income' && t.categoryId !== 'modal').reduce((a, b) => a + b.amount, 0);
+  const hpp = validTxs.filter(t => t.type === 'expense' && ['bahan_baku', 'kemasan'].includes(t.categoryId)).reduce((a, b) => a + b.amount, 0);
   const labaKotor = pendapatanMurni - hpp;
-  const operasional = transactions.filter(t => t.type === 'expense' && !['bahan_baku', 'kemasan'].includes(t.categoryId)).reduce((a, b) => a + b.amount, 0);
+  const operasional = validTxs.filter(t => t.type === 'expense' && !['bahan_baku', 'kemasan'].includes(t.categoryId)).reduce((a, b) => a + b.amount, 0);
   const labaBersih = labaKotor - operasional;
 
   // --- PERSIAPAN GRAFIK HARIAN (BAR CHART) ---
@@ -368,8 +386,8 @@ function DashboardTab({ transactions, prevTransactions, viewMonth }) {
   
   const dailyData = Array.from({length: daysInMonth}, (_, i) => {
     const day = i + 1;
-    const income = transactions.filter(t => t.type === 'income' && new Date(t.date).getDate() === day).reduce((a, b) => a + b.amount, 0);
-    const expense = transactions.filter(t => t.type === 'expense' && new Date(t.date).getDate() === day).reduce((a, b) => a + b.amount, 0);
+    const income = validTxs.filter(t => t.type === 'income' && new Date(t.date).getDate() === day).reduce((a, b) => a + b.amount, 0);
+    const expense = validTxs.filter(t => t.type === 'expense' && new Date(t.date).getDate() === day).reduce((a, b) => a + b.amount, 0);
     return { day, income, expense };
   });
 
@@ -377,7 +395,7 @@ function DashboardTab({ transactions, prevTransactions, viewMonth }) {
 
   // --- PIE CHART PENGELUARAN ---
   const expenseStats = {};
-  transactions.filter(t => t.type === 'expense').forEach(t => {
+  validTxs.filter(t => t.type === 'expense').forEach(t => {
     expenseStats[t.categoryId] = (expenseStats[t.categoryId] || 0) + t.amount;
   });
 
@@ -410,21 +428,48 @@ function DashboardTab({ transactions, prevTransactions, viewMonth }) {
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      
+      {/* KARTU PERINGATAN HUTANG PIUTANG (Hanya muncul jika ada data pending) */}
+      {(totalHutang > 0 || totalPiutang > 0) && (
+        <div className="flex flex-col gap-2">
+          {totalHutang > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-2xl p-3 flex items-center gap-3">
+              <div className="bg-red-100 p-2 rounded-full text-red-600">
+                <AlertCircle size={20} />
+              </div>
+              <div>
+                <p className="text-xs text-red-600 font-bold uppercase tracking-wider">Hutang / Tagihan Belum Dibayar</p>
+                <p className="text-sm font-black text-red-700">{formatRp(totalHutang)} ({hutangTxs.length} item)</p>
+              </div>
+            </div>
+          )}
+          {totalPiutang > 0 && (
+            <div className="bg-blue-50 border border-blue-200 rounded-2xl p-3 flex items-center gap-3">
+              <div className="bg-blue-100 p-2 rounded-full text-blue-600">
+                <CheckSquare size={20} />
+              </div>
+              <div>
+                <p className="text-xs text-blue-600 font-bold uppercase tracking-wider">Piutang / Kasbon Karyawan</p>
+                <p className="text-sm font-black text-blue-700">{formatRp(totalPiutang)} ({piutangTxs.length} item)</p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="bg-gray-900 rounded-3xl p-6 text-white shadow-xl relative overflow-hidden">
-        <p className="text-gray-400 text-sm font-medium mb-1">Arus Kas Kotor (Bulan Ini)</p>
+        <p className="text-gray-400 text-sm font-medium mb-1">Kas Real (Uang Fisik & Bank)</p>
         <h2 className="text-3xl font-bold mb-4">{formatRp(balance)}</h2>
         
         <div className="flex justify-between items-start gap-4">
           <div className="flex-1 bg-white/10 rounded-2xl p-3 backdrop-blur-sm">
             <div className="flex items-center gap-2 mb-1 text-green-400"><TrendingUp size={16} /><span className="text-xs font-semibold">Uang Masuk</span></div>
             <p className="text-sm font-bold">{formatRp(totalIncome)}</p>
-            {/* INDIKATOR PERTUMBUHAN */}
             {renderGrowthBadge(totalIncome, prevIncome, 'income')}
           </div>
           <div className="flex-1 bg-white/10 rounded-2xl p-3 backdrop-blur-sm">
             <div className="flex items-center gap-2 mb-1 text-red-400"><TrendingDown size={16} /><span className="text-xs font-semibold">Uang Keluar</span></div>
             <p className="text-sm font-bold">{formatRp(totalExpense)}</p>
-            {/* INDIKATOR PERTUMBUHAN */}
             {renderGrowthBadge(totalExpense, prevExpense, 'expense')}
           </div>
         </div>
@@ -459,7 +504,6 @@ function DashboardTab({ transactions, prevTransactions, viewMonth }) {
         </div>
       </div>
 
-      {/* FITUR BARU: GRAFIK TREN HARIAN (BAR CHART) */}
       <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100">
         <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
           <BarChart3 className="text-blue-500" size={20} />
@@ -471,21 +515,17 @@ function DashboardTab({ transactions, prevTransactions, viewMonth }) {
         ) : (
           <div className="flex overflow-x-auto gap-1 pb-2 h-36 items-end [&::-webkit-scrollbar]:hidden scroll-smooth">
              {dailyData.map(d => {
-               // Hitung tinggi batang relatif terhadap nilai maksimum
                const incomeHeight = Math.max((d.income / maxDailyVal) * 100, 0);
                const expenseHeight = Math.max((d.expense / maxDailyVal) * 100, 0);
                
-               // Jangan tampilkan hari yang sama sekali kosong biar grafik lebih padat
                if (d.income === 0 && d.expense === 0) return null;
 
                return (
                  <div key={d.day} className="flex flex-col items-center justify-end gap-1 flex-shrink-0 w-7">
                    <div className="flex items-end gap-0.5 w-full h-28 justify-center group relative">
-                      {/* Tooltip Hover (Pemasukan) */}
                       {d.income > 0 && (
                         <div className="bg-green-400 rounded-t-sm w-2.5 transition-all hover:bg-green-500 cursor-pointer" style={{ height: `${incomeHeight}%` }} title={`Tanggal ${d.day}: +${formatRp(d.income)}`}></div>
                       )}
-                      {/* Tooltip Hover (Pengeluaran) */}
                       {d.expense > 0 && (
                         <div className="bg-red-400 rounded-t-sm w-2.5 transition-all hover:bg-red-500 cursor-pointer" style={{ height: `${expenseHeight}%` }} title={`Tanggal ${d.day}: -${formatRp(d.expense)}`}></div>
                       )}
@@ -501,7 +541,7 @@ function DashboardTab({ transactions, prevTransactions, viewMonth }) {
       <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100">
         <h3 className="font-bold text-gray-800 mb-4">Pengeluaran Terbesar</h3>
         {totalExpense === 0 ? (
-          <p className="text-sm text-center text-gray-400 py-4">Belum ada pengeluaran bulan ini.</p>
+          <p className="text-sm text-center text-gray-400 py-4">Belum ada pengeluaran lunas bulan ini.</p>
         ) : (
           <div className="flex flex-col items-center">
             <div className="relative w-40 h-40 rounded-full mb-6 shadow-inner" style={{ background: `conic-gradient(${conicString})` }}>
@@ -544,6 +584,7 @@ function AddTransactionTab({ onSave, subcategories, onUpdateSubs }) {
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [txDate, setTxDate] = useState(getLocalDatetimeLocal()); 
+  const [isPending, setIsPending] = useState(false); // State untuk Hutang/Kasbon
   
   const [isEditingSubs, setIsEditingSubs] = useState(false);
   const [newSubName, setNewSubName] = useState('');
@@ -556,6 +597,7 @@ function AddTransactionTab({ onSave, subcategories, onUpdateSubs }) {
     setSelectedCategory(null); 
     setSelectedSub(''); 
     setIsEditingSubs(false); 
+    setIsPending(false);
     setTxDate(getLocalDatetimeLocal()); 
   }, [type]);
 
@@ -571,9 +613,10 @@ function AddTransactionTab({ onSave, subcategories, onUpdateSubs }) {
       subcategory: selectedSub, 
       amount: Number(amount), 
       note,
-      date: new Date(txDate).toISOString() 
+      date: new Date(txDate).toISOString(),
+      status: isPending ? 'pending' : 'lunas' // Kirim status ke database
     });
-    setAmount(''); setNote(''); setTxDate(getLocalDatetimeLocal());
+    setAmount(''); setNote(''); setIsPending(false); setTxDate(getLocalDatetimeLocal());
   };
 
   const handleAddSub = () => {
@@ -662,6 +705,21 @@ function AddTransactionTab({ onSave, subcategories, onUpdateSubs }) {
             <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Catatan</label>
             <input type="text" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Contoh: Pembelian ayam 5kg" className="w-full p-4 rounded-2xl bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-orange-400 border border-transparent text-sm" />
           </div>
+
+          {/* FITUR BARU: Checkbox Hutang/Kasbon */}
+          <div className="pt-2 pb-1 border-t border-gray-100 flex items-center gap-3">
+             <input 
+               type="checkbox" 
+               id="pendingStatus" 
+               checked={isPending} 
+               onChange={(e) => setIsPending(e.target.checked)} 
+               className="w-5 h-5 accent-orange-500 rounded-md" 
+             />
+             <label htmlFor="pendingStatus" className="text-sm font-bold text-gray-700 select-none">
+               {type === 'expense' ? 'Belum Dibayar (Belum Ada Tagihan)' : 'Uang Belum Masuk (Kasbon / Piutang)'}
+             </label>
+          </div>
+
         </div>
 
         <button onClick={handleSubmit} disabled={!isFormValid} className={`w-full py-4 rounded-2xl font-bold text-lg flex justify-center items-center gap-2 transition-all ${isFormValid ? `text-white shadow-lg ${type === 'expense' ? 'bg-red-500' : 'bg-green-500'}` : 'bg-gray-200 text-gray-400'}`}><CheckCircle2 size={24} /> Simpan Transaksi</button>
@@ -671,9 +729,10 @@ function AddTransactionTab({ onSave, subcategories, onUpdateSubs }) {
 }
 
 // --- TAB: RIWAYAT BULANAN ---
-function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
+function HistoryTab({ transactions, onEditClick, onPayClick, viewMonth, setViewMonth }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterDate, setFilterDate] = useState(''); 
+  const [statusFilter, setStatusFilter] = useState('all'); // 'all', 'lunas', 'pending'
 
   const monthsList = Array.from({ length: 12 }).map((_, i) => {
     const d = new Date();
@@ -696,6 +755,7 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
   const searchedTxs = transactions.filter(tx => {
     let matchSearch = true;
     let matchDate = true;
+    let matchStatus = true;
 
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
@@ -714,7 +774,13 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
       matchDate = (txDateStr === filterDate);
     }
 
-    return matchSearch && matchDate;
+    if (statusFilter === 'pending') {
+      matchStatus = tx.status === 'pending';
+    } else if (statusFilter === 'lunas') {
+      matchStatus = tx.status !== 'pending';
+    }
+
+    return matchSearch && matchDate && matchStatus;
   });
 
   const groupedTxs = searchedTxs.reduce((groups, tx) => {
@@ -725,16 +791,19 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
       groups[dateStr] = { dateStr, dateObj: d, txs: [], dailyIncome: 0, dailyExpense: 0 };
     }
     groups[dateStr].txs.push(tx);
-    if (tx.type === 'income') groups[dateStr].dailyIncome += tx.amount;
-    else groups[dateStr].dailyExpense += tx.amount;
+    // Hanya jumlahkan nominal harian jika sudah lunas
+    if (tx.status !== 'pending') {
+       if (tx.type === 'income') groups[dateStr].dailyIncome += tx.amount;
+       else groups[dateStr].dailyExpense += tx.amount;
+    }
     return groups;
   }, {});
 
   const sortedDates = Object.values(groupedTxs).sort((a, b) => b.dateObj - a.dateObj);
   sortedDates.forEach(group => group.txs.sort((a, b) => new Date(b.date) - new Date(a.date)));
 
-  const monthIncome = searchedTxs.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
-  const monthExpense = searchedTxs.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
+  const monthIncome = searchedTxs.filter(t => t.type === 'income' && t.status !== 'pending').reduce((acc, curr) => acc + curr.amount, 0);
+  const monthExpense = searchedTxs.filter(t => t.type === 'expense' && t.status !== 'pending').reduce((acc, curr) => acc + curr.amount, 0);
 
   return (
     <div className="space-y-4 pb-10 animate-in fade-in slide-in-from-left-4 duration-300">
@@ -742,7 +811,7 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
       <div className="px-1 mb-2">
         <h2 className="text-2xl font-bold text-gray-800 mb-3">Riwayat Transaksi</h2>
         
-        <div className="flex gap-2">
+        <div className="flex gap-2 mb-3">
           <div className="relative flex-1">
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
               <Search className="h-5 w-5 text-gray-400" />
@@ -778,6 +847,13 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
               )}
             </div>
           </div>
+        </div>
+
+        {/* FITUR BARU: FILTER LUNAS / BELUM LUNAS */}
+        <div className="flex bg-gray-200 p-1 rounded-xl">
+           <button onClick={() => setStatusFilter('all')} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${statusFilter === 'all' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>Semua</button>
+           <button onClick={() => setStatusFilter('lunas')} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${statusFilter === 'lunas' ? 'bg-white text-green-600 shadow-sm' : 'text-gray-500'}`}>Lunas</button>
+           <button onClick={() => setStatusFilter('pending')} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${statusFilter === 'pending' ? 'bg-white text-red-600 shadow-sm' : 'text-gray-500'}`}>Hutang / Kasbon</button>
         </div>
       </div>
       
@@ -832,28 +908,42 @@ function HistoryTab({ transactions, onEditClick, viewMonth, setViewMonth }) {
               <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden divide-y divide-gray-50">
                 {group.txs.map((tx) => {
                   const isExpense = tx.type === 'expense';
+                  const isPending = tx.status === 'pending';
                   const dateObj = new Date(tx.date);
                   const timeString = dateObj.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
 
                   return (
-                    <div key={tx.id} className="p-3.5 flex items-center justify-between gap-3 hover:bg-gray-50 transition-colors">
+                    <div key={tx.id} className={`p-3.5 flex items-center justify-between gap-3 transition-colors ${isPending ? 'bg-orange-50/50 hover:bg-orange-50' : 'hover:bg-gray-50'}`}>
                       <div className="flex items-center gap-3 overflow-hidden">
                         <div className={`p-2 rounded-full flex-shrink-0 ${isExpense ? 'bg-red-50 text-red-500' : 'bg-green-50 text-green-500'}`}>
                           {isExpense ? <TrendingDown size={16} /> : <TrendingUp size={16} />}
                         </div>
-                        <div className="truncate">
-                          <p className="font-bold text-gray-800 text-sm truncate">{tx.subcategory || tx.category}</p>
-                          <p className="text-[10px] text-gray-500 flex items-center gap-1">{tx.category} • {timeString}</p>
+                        <div className="truncate flex flex-col justify-center">
+                          <div className="flex items-center gap-2">
+                             <p className="font-bold text-gray-800 text-sm truncate">{tx.subcategory || tx.category}</p>
+                             {isPending && <span className="bg-red-100 text-red-600 px-1.5 py-0.5 text-[8px] rounded-md font-black tracking-wider flex-shrink-0">BELUM LUNAS</span>}
+                          </div>
+                          <p className="text-[10px] text-gray-500 flex items-center gap-1 mt-0.5">{tx.category} • {timeString}</p>
                           {tx.note && <p className="text-[11px] text-gray-400 truncate mt-0.5">"{tx.note}"</p>}
                         </div>
                       </div>
-                      <div className="flex flex-col items-end flex-shrink-0 gap-1">
+                      
+                      <div className="flex flex-col items-end flex-shrink-0 gap-2">
                         <p className={`font-bold text-sm ${isExpense ? 'text-red-600' : 'text-green-600'}`}>
                           {isExpense ? '-' : '+'}{formatRp(tx.amount)}
                         </p>
-                        <button onClick={() => onEditClick(tx)} className="text-[10px] flex items-center gap-1 font-bold text-blue-500 bg-blue-50 px-2 py-1 rounded-lg hover:bg-blue-100 transition-colors">
-                          <Edit2 size={10} /> Edit
-                        </button>
+                        
+                        <div className="flex gap-2">
+                           {/* TOMBOL BAYAR CEPAT JIKA PENDING */}
+                           {isPending && (
+                             <button onClick={() => onPayClick(tx)} className="text-[10px] flex items-center gap-1 font-bold text-white bg-green-500 px-2.5 py-1 rounded-lg hover:bg-green-600 transition-colors shadow-sm">
+                               <CheckSquare size={10} /> Lunasi
+                             </button>
+                           )}
+                           <button onClick={() => onEditClick(tx)} className="text-[10px] flex items-center gap-1 font-bold text-blue-500 bg-blue-50 px-2 py-1 rounded-lg hover:bg-blue-100 transition-colors">
+                             <Edit2 size={10} /> Edit
+                           </button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -872,13 +962,14 @@ function EditTransactionModal({ tx, onClose, onSave, onDelete }) {
   const [amount, setAmount] = useState(tx.amount.toString());
   const [note, setNote] = useState(tx.note || '');
   const [txDate, setTxDate] = useState(getLocalDatetimeLocal(tx.date)); 
+  const [isPending, setIsPending] = useState(tx.status === 'pending');
 
   const handleAmountChange = (e) => setAmount(e.target.value.replace(/[^0-9]/g, ''));
   const isFormValid = amount && Number(amount) > 0 && txDate;
 
   const handleSave = () => {
     if (!isFormValid) return;
-    onSave({ ...tx, amount: Number(amount), note, date: new Date(txDate).toISOString() });
+    onSave({ ...tx, amount: Number(amount), note, date: new Date(txDate).toISOString(), status: isPending ? 'pending' : 'lunas' });
   };
 
   return (
@@ -917,6 +1008,19 @@ function EditTransactionModal({ tx, onClose, onSave, onDelete }) {
           <div>
             <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Catatan Tambahan</label>
             <input type="text" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Catatan..." className="w-full p-3 rounded-2xl bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 border border-transparent text-sm" />
+          </div>
+
+          <div className="pt-2 border-t border-gray-100 flex items-center gap-3">
+             <input 
+               type="checkbox" 
+               id="editPendingStatus" 
+               checked={isPending} 
+               onChange={(e) => setIsPending(e.target.checked)} 
+               className="w-5 h-5 accent-orange-500 rounded-md" 
+             />
+             <label htmlFor="editPendingStatus" className="text-sm font-bold text-gray-700 select-none">
+               Belum Lunas (Ngebon / Kasbon)
+             </label>
           </div>
         </div>
 
