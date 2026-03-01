@@ -5,11 +5,11 @@ import {
   Megaphone, Wrench, MoreHorizontal, Wallet, Coins,
   CheckCircle2, PieChart, Edit2, X, Trash2, Plus,
   CalendarDays, ChevronUp, Download, Loader2, Search,
-  Calendar, BarChart3, AlertCircle, CheckSquare
+  Calendar, BarChart3, AlertCircle, CheckSquare, Lock, Unlock
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, setDoc } from 'firebase/firestore';
 
 // =====================================================================
@@ -28,6 +28,11 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = "kas-mie-ayam";
+
+// =====================================================================
+// PENGATURAN PIN (Ganti angka di bawah ini sesuai keinginanmu)
+// =====================================================================
+const APP_PIN = "123456"; 
 
 // --- DATA KATEGORI ---
 const EXPENSE_CATEGORIES = [
@@ -89,8 +94,12 @@ const getLocalDatetimeLocal = (dateParam = new Date()) => {
   return `${year}-${month}-${day}T${hours}:${minutes}`;
 };
 
+// =====================================================================
+// KOMPONEN UTAMA
+// =====================================================================
 export default function App() {
   const [user, setUser] = useState(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false); // State untuk layar PIN
   const [activeTab, setActiveTab] = useState('add'); 
   const [viewMonth, setViewMonth] = useState(getCurrentMonthStr()); 
   const [transactions, setTransactions] = useState([]);
@@ -100,20 +109,11 @@ export default function App() {
   const [showTopBtn, setShowTopBtn] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
-  // --- 1. FIREBASE AUTHENTICATION ---
+  // --- 1. FIREBASE AUTHENTICATION (Anonim untuk koneksi publik) ---
   useEffect(() => {
     const initAuth = async () => {
       try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          try {
-            await signInWithCustomToken(auth, __initial_auth_token);
-          } catch (tokenError) {
-            console.warn("Mencoba login anonim...", tokenError);
-            await signInAnonymously(auth);
-          }
-        } else {
-          await signInAnonymously(auth);
-        }
+        await signInAnonymously(auth);
       } catch (error) {
         console.error("Auth error:", error);
       }
@@ -124,15 +124,26 @@ export default function App() {
       setUser(currentUser);
       if (!currentUser) setIsLoading(false);
     });
+    
+    // Cek Session Storage untuk status login (biar gak minta PIN terus kalau di-refresh)
+    const sessionAuth = sessionStorage.getItem('isSadjiAuth');
+    if (sessionAuth === 'true') setIsAuthenticated(true);
+
     return () => unsubscribe();
   }, []);
 
-  // --- 2. FETCH DATA (CURRENT & PREVIOUS MONTH) ---
+  // --- 2. FETCH DATA (DARI LACI BERSAMA / PUBLIC) ---
   useEffect(() => {
-    if (!user) return;
+    // Hanya fetch data kalau user sudah masukin PIN
+    if (!user || !isAuthenticated) {
+      if(user) setIsLoading(false);
+      return;
+    }
+    
     setIsLoading(true);
 
-    const txRef = collection(db, 'artifacts', appId, 'users', user.uid, `transactions_${viewMonth}`);
+    // MENGGUNAKAN JALUR PUBLIC/SHARED DATABASE
+    const txRef = collection(db, 'artifacts', appId, 'public', 'data', `transactions_${viewMonth}`);
     const unsubscribeTx = onSnapshot(txRef, 
       (snapshot) => {
         const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -147,7 +158,7 @@ export default function App() {
     );
 
     const prevMonthStr = getPrevMonthStr(viewMonth);
-    const prevTxRef = collection(db, 'artifacts', appId, 'users', user.uid, `transactions_${prevMonthStr}`);
+    const prevTxRef = collection(db, 'artifacts', appId, 'public', 'data', `transactions_${prevMonthStr}`);
     const unsubscribePrevTx = onSnapshot(prevTxRef, 
       (snapshot) => {
         const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -156,7 +167,7 @@ export default function App() {
       (error) => console.error("Gagal mengambil transaksi bulan lalu:", error)
     );
 
-    const settingsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'preferences');
+    const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'preferences');
     const unsubscribeSettings = onSnapshot(settingsRef, 
       (docSnap) => {
         if (docSnap.exists() && docSnap.data().subcategories) {
@@ -171,16 +182,16 @@ export default function App() {
       unsubscribePrevTx();
       unsubscribeSettings();
     };
-  }, [user, viewMonth]); 
+  }, [user, viewMonth, isAuthenticated]); 
 
-  // --- 3. DATABASE OPERATIONS ---
+  // --- 3. DATABASE OPERATIONS (KE LACI BERSAMA) ---
   const addTransaction = async (data) => {
-    if (!user) return;
+    if (!user || !isAuthenticated) return;
     try {
       const d = new Date(data.date);
       const targetMonth = `${d.getFullYear()}_${String(d.getMonth() + 1).padStart(2, '0')}`;
       
-      const txRef = collection(db, 'artifacts', appId, 'users', user.uid, `transactions_${targetMonth}`);
+      const txRef = collection(db, 'artifacts', appId, 'public', 'data', `transactions_${targetMonth}`);
       await addDoc(txRef, data);
       
       setViewMonth(targetMonth);
@@ -191,18 +202,18 @@ export default function App() {
   };
 
   const updateTransaction = async (updatedTx) => {
-    if (!user) return;
+    if (!user || !isAuthenticated) return;
     try {
       const newDate = new Date(updatedTx.date);
       const newMonth = `${newDate.getFullYear()}_${String(newDate.getMonth() + 1).padStart(2, '0')}`;
 
       if (newMonth !== viewMonth) {
-        await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, `transactions_${viewMonth}`, updatedTx.id));
+        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', `transactions_${viewMonth}`, updatedTx.id));
         const { id, ...dataToUpdate } = updatedTx; 
-        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, `transactions_${newMonth}`), dataToUpdate);
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', `transactions_${newMonth}`), dataToUpdate);
         setViewMonth(newMonth); 
       } else {
-        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, `transactions_${viewMonth}`, updatedTx.id);
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', `transactions_${viewMonth}`, updatedTx.id);
         const { id, ...dataToUpdate } = updatedTx; 
         await updateDoc(docRef, dataToUpdate);
       }
@@ -213,9 +224,9 @@ export default function App() {
   };
 
   const deleteTransaction = async (id) => {
-    if (!user) return;
+    if (!user || !isAuthenticated) return;
     try {
-      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, `transactions_${viewMonth}`, id);
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', `transactions_${viewMonth}`, id);
       await deleteDoc(docRef);
       setEditingTx(null);
     } catch (e) {
@@ -224,10 +235,9 @@ export default function App() {
   };
 
   const payTransaction = async (tx) => {
-    if (!user) return;
+    if (!user || !isAuthenticated) return;
     try {
-      // Mengubah status menjadi lunas
-      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, `transactions_${viewMonth}`, tx.id);
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', `transactions_${viewMonth}`, tx.id);
       await updateDoc(docRef, { status: 'lunas', paymentDate: new Date().toISOString() });
     } catch (e) {
       console.error("Gagal melunasi transaksi: ", e);
@@ -235,11 +245,11 @@ export default function App() {
   };
 
   const updateSubcategories = async (categoryId, newSubs) => {
-    if (!user) return;
+    if (!user || !isAuthenticated) return;
     const updatedSubcategories = { ...subcategories, [categoryId]: newSubs };
     setSubcategories(updatedSubcategories); 
     try {
-      const settingsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'preferences');
+      const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'preferences');
       await setDoc(settingsRef, { subcategories: updatedSubcategories }, { merge: true });
     } catch (e) {}
   };
@@ -273,7 +283,8 @@ export default function App() {
     if (scrollContainer) scrollContainer.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  if (isLoading && !transactions.length) {
+  // --- LAYAR LOADING AWAL ---
+  if (isLoading && !transactions.length && isAuthenticated) {
     return (
       <div className="flex justify-center items-center bg-gray-100 h-[100dvh] font-sans text-gray-800">
         <div className="flex flex-col items-center text-orange-500">
@@ -284,6 +295,15 @@ export default function App() {
     );
   }
 
+  // --- RENDER LAYAR LOGIN PIN ---
+  if (!isAuthenticated) {
+    return <LoginScreen onLoginSuccess={() => {
+      setIsAuthenticated(true);
+      sessionStorage.setItem('isSadjiAuth', 'true');
+    }} />;
+  }
+
+  // --- RENDER APLIKASI UTAMA ---
   return (
     <div className="flex justify-center bg-gray-100 h-[100dvh] font-sans text-gray-800 overflow-hidden">
       <div className="w-full max-w-md bg-white h-full shadow-2xl relative flex flex-col">
@@ -291,13 +311,22 @@ export default function App() {
         {/* Header */}
         <div className="pt-10 pb-4 px-6 bg-gradient-to-r from-orange-500 to-amber-500 text-white rounded-b-3xl shadow-md z-10 shrink-0 flex justify-between items-end">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Kas Mie Ayam</h1>
-            <p className="text-orange-100 text-sm font-medium">Buku Kas SADJIAN</p>
+            <h1 className="text-2xl font-bold tracking-tight">Buku Kas SADJIAN</h1>
+            <p className="text-orange-100 text-sm font-medium">Buku Kas Digital Arief</p>
           </div>
-          <button onClick={exportToCSV} className="p-2 bg-white/20 hover:bg-white/30 rounded-xl transition-colors flex flex-col items-center">
-            <Download size={20} />
-            <span className="text-[9px] font-bold mt-1">Ekspor</span>
-          </button>
+          <div className="flex gap-2">
+            <button onClick={() => {
+              sessionStorage.removeItem('isSadjiAuth');
+              setIsAuthenticated(false);
+            }} className="p-2 bg-white/20 hover:bg-white/30 rounded-xl transition-colors flex flex-col items-center">
+              <Lock size={16} />
+              <span className="text-[9px] font-bold mt-1">Kunci</span>
+            </button>
+            <button onClick={exportToCSV} className="p-2 bg-white/20 hover:bg-white/30 rounded-xl transition-colors flex flex-col items-center">
+              <Download size={16} />
+              <span className="text-[9px] font-bold mt-1">Ekspor</span>
+            </button>
+          </div>
         </div>
 
         {/* Content */}
@@ -322,6 +351,66 @@ export default function App() {
         </div>
 
         {editingTx && <EditTransactionModal tx={editingTx} onClose={() => setEditingTx(null)} onSave={updateTransaction} onDelete={deleteTransaction} />}
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// KOMPONEN: LAYAR LOGIN PIN
+// =====================================================================
+function LoginScreen({ onLoginSuccess }) {
+  const [pinInput, setPinInput] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const handlePinChange = (e) => {
+    const val = e.target.value.replace(/[^0-9]/g, '');
+    if (val.length <= 6) {
+      setPinInput(val);
+      setErrorMsg('');
+    }
+  };
+
+  const handleLogin = () => {
+    if (pinInput === APP_PIN) {
+      onLoginSuccess();
+    } else {
+      setErrorMsg('PIN salah. Silakan coba lagi.');
+      setPinInput('');
+    }
+  };
+
+  return (
+    <div className="flex justify-center items-center bg-gray-100 h-[100dvh] font-sans text-gray-800">
+      <div className="w-full max-w-md bg-white h-full shadow-2xl flex flex-col justify-center items-center p-8">
+        <div className="bg-orange-100 p-4 rounded-full text-orange-500 mb-6">
+          <Lock size={40} />
+        </div>
+        <h1 className="text-2xl font-black text-gray-800 mb-2">Buku Kas SADJIAN</h1>
+        <p className="text-sm text-gray-500 mb-8 text-center">Masukkan PIN rahasia untuk mengakses database pembukuan.</p>
+        
+        <div className="w-full max-w-xs space-y-4">
+          <div className="relative">
+            <input 
+              type="password" 
+              inputMode="numeric"
+              placeholder="••••••"
+              value={pinInput}
+              onChange={handlePinChange}
+              className={`w-full text-center text-3xl tracking-[1em] font-bold p-4 rounded-2xl bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 transition-all ${errorMsg ? 'border-red-500 ring-2 ring-red-200 focus:ring-red-400' : 'focus:ring-orange-400 border-gray-200 border'}`}
+            />
+          </div>
+          
+          {errorMsg && <p className="text-red-500 text-xs font-bold text-center animate-in shake">{errorMsg}</p>}
+          
+          <button 
+            onClick={handleLogin}
+            disabled={pinInput.length < 4}
+            className={`w-full py-4 rounded-2xl font-bold text-lg flex justify-center items-center gap-2 transition-all ${pinInput.length >= 4 ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/30 hover:bg-orange-600' : 'bg-gray-200 text-gray-400'}`}
+          >
+            <Unlock size={20} /> Masuk Aplikasi
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -716,7 +805,7 @@ function AddTransactionTab({ onSave, subcategories, onUpdateSubs }) {
                className="w-5 h-5 accent-orange-500 rounded-md" 
              />
              <label htmlFor="pendingStatus" className="text-sm font-bold text-gray-700 select-none">
-               {type === 'expense' ? 'Belum Dibayar (Belum Ada Tagihan)' : 'Uang Belum Masuk (Kasbon / Piutang)'}
+               {type === 'expense' ? 'Belum Dibayar (Ngebon / Tagihan)' : 'Uang Belum Masuk (Kasbon / Piutang)'}
              </label>
           </div>
 
