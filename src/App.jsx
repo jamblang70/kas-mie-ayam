@@ -4,7 +4,7 @@ import {
   ShoppingBag, Package, Receipt, Building, Truck, 
   Megaphone, Wrench, MoreHorizontal, Wallet, Coins,
   CheckCircle2, PieChart, Edit2, X, Trash2, Plus,
-  CalendarDays, ChevronUp, Download, Loader2, Search,
+  CalendarDays, ChevronUp, ChevronDown, Download, Loader2, Search,
   Calendar, BarChart3, AlertCircle, CheckSquare, Lock, Unlock
 } from 'lucide-react';
 
@@ -331,7 +331,7 @@ export default function App() {
 
         {/* Content */}
         <div id="main-scroll-area" onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 pt-6 pb-28 scroll-smooth">
-          {activeTab === 'dashboard' && <DashboardTab transactions={transactions} prevTransactions={prevTransactions} viewMonth={viewMonth} />}
+          {activeTab === 'dashboard' && <DashboardTab transactions={transactions} prevTransactions={prevTransactions} viewMonth={viewMonth} setViewMonth={setViewMonth} />}
           {activeTab === 'add' && <AddTransactionTab onSave={addTransaction} subcategories={subcategories} onUpdateSubs={updateSubcategories} />}
           {activeTab === 'history' && <HistoryTab transactions={transactions} onEditClick={setEditingTx} onPayClick={payTransaction} viewMonth={viewMonth} setViewMonth={setViewMonth} />}
         </div>
@@ -417,7 +417,16 @@ function LoginScreen({ onLoginSuccess }) {
 }
 
 // --- TAB: BERANDA / DASHBOARD ---
-function DashboardTab({ transactions, prevTransactions, viewMonth }) {
+function DashboardTab({ transactions, prevTransactions, viewMonth, setViewMonth }) {
+  // --- DAFTAR BULAN UNTUK DROPDOWN (12 Bulan Terakhir) ---
+  const monthsList = Array.from({ length: 12 }).map((_, i) => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - i);
+    const monthStr = `${d.getFullYear()}_${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const labelStr = d.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+    return { str: monthStr, label: i === 0 ? `Bulan Ini (${labelStr})` : labelStr };
+  });
+
   // --- KALKULASI TOTAL (HANYA YANG SUDAH LUNAS) ---
   const validTxs = transactions.filter(t => t.status !== 'pending');
   const validPrevTxs = prevTransactions.filter(t => t.status !== 'pending');
@@ -518,6 +527,25 @@ function DashboardTab({ transactions, prevTransactions, viewMonth }) {
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       
+      {/* HEADER BERANDA & PEMILIH BULAN */}
+      <div className="flex justify-between items-center mb-2 px-1">
+        <h2 className="text-xl font-bold text-gray-800">Ringkasan</h2>
+        <div className="relative">
+          <select 
+            value={viewMonth} 
+            onChange={(e) => setViewMonth(e.target.value)}
+            className="appearance-none bg-white border border-gray-200 text-gray-700 py-2 pl-4 pr-8 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-orange-500 font-bold text-sm cursor-pointer"
+          >
+            {monthsList.map(m => (
+              <option key={m.str} value={m.str}>{m.label}</option>
+            ))}
+          </select>
+          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-400">
+            <ChevronDown size={16} />
+          </div>
+        </div>
+      </div>
+
       {/* KARTU PERINGATAN HUTANG PIUTANG (Hanya muncul jika ada data pending) */}
       {(totalHutang > 0 || totalPiutang > 0) && (
         <div className="flex flex-col gap-2">
